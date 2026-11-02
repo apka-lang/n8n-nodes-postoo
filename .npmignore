@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+.git/
+credentials/*.ts
+nodes/**/*.ts
+tsconfig.json
+tsconfig.tsbuildinfo
+dist/tsconfig.tsbuildinfo
+package-lock.json
+*.tgz
