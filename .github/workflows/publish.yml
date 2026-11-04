@@ -27,5 +27,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Release
-        run: npm run release
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Stage release for approval
+        run: npm stage publish
+        env:
+          RELEASE_MODE: 'true'
+          NPM_CONFIG_PROVENANCE: 'true'
