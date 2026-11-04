@@ -36,5 +36,6 @@ jobs:
       - name: Stage release for approval
         run: npm stage publish
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_MODE: 'true'
           NPM_CONFIG_PROVENANCE: 'true'
