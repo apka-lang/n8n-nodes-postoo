@@ -46,7 +46,8 @@ export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
 	account_inactive: 'The selected social account is inactive.',
 	account_disconnected: 'The selected social account is disconnected. Reconnect it in Postoo.',
 	publish_rejected: 'The social network rejected the post. Check the content and media.',
-	publish_failed_unknown: 'Postoo could not publish the post. Try again later.',
+	publish_failed_unknown:
+		'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

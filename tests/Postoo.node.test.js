@@ -48,6 +48,10 @@ test('maps stable Postoo error codes to English messages', () => {
 		getPostooErrorMessage('account_disconnected'),
 		'The selected social account is disconnected. Reconnect it in Postoo.',
 	);
+	assert.equal(
+		getPostooErrorMessage('publish_failed_unknown'),
+		'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
+	);
 	assert.equal(getPostooErrorMessage('new_error_code'), 'Postoo returned an error.');
 });
 

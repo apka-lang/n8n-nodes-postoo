@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-postoo",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "n8n node for Postoo — publish posts to LinkedIn, Facebook, Instagram, TikTok, and more via the Postoo API.",
 	"keywords": [
 		"n8n-community-node-package",

@@ -32,7 +32,7 @@ Publishes one post to one connected social account using `POST /publish`.
 - **Social Account Name or ID**: Choose a connected account or provide its Postoo account ID with an expression.
 - **Content**: Plain-text post content, up to 5,000 characters.
 - **Media URL**: Optional public image or video URL.
-- **Idempotency Key**: Optional 8 to 128 character key. Reusing the same key makes retries safe and avoids duplicate posts.
+- **Idempotency Key**: Optional 8 to 128 character key. Use a stable value derived from your source record and target account for correlation and forward compatibility. The current Postoo API does not yet guarantee durable replay or deduplication.
 
 The operation returns the external post ID, platform, and publication status.
 
@@ -50,7 +50,7 @@ Lists the social accounts connected to the Postoo workspace using `GET /accounts
           → [Postoo: Publish to TikTok]
 ```
 
-For retries, use a stable idempotency key derived from your source record and target account, such as `post-{{$json.id}}-{{$json.accountId}}`.
+Use a stable idempotency key derived from your source record and target account, such as `post-{{$json.id}}-{{$json.accountId}}`. Do not automatically retry an ambiguous publication: the current API can return an unknown outcome without a durable operation to replay.
 
 ## Errors and rate limits
 
@@ -63,6 +63,8 @@ Postoo errors are returned in English with a stable code and request ID where av
 - `account_disconnected`
 - `publish_rejected`
 - `publish_failed_unknown`
+
+`publish_failed_unknown` means Postoo cannot confirm whether the provider accepted the post. Do not retry automatically. First inspect the destination account at the social provider; a blind retry can create a duplicate post.
 
 Default API limits:
 
