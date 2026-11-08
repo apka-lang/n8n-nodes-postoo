@@ -7,7 +7,7 @@ const {
 	getPostooErrorMessage,
 } = require('../dist/nodes/Postoo/Postoo.node.js');
 
-function createNodeContext(parameters, request, continueOnFail = false) {
+function createNodeContext(parameters, request, continueOnFail = false, nodeOverrides = {}) {
 	return {
 		getInputData: () => [{ json: { sourceId: 'source-1' } }],
 		getCredentials: async () => ({ baseUrl: 'https://postoo.example/api/v1' }),
@@ -18,6 +18,7 @@ function createNodeContext(parameters, request, continueOnFail = false) {
 			typeVersion: 1,
 			position: [0, 0],
 			name: 'Postoo',
+			...nodeOverrides,
 		}),
 		continueOnFail: () => continueOnFail,
 		helpers: {
@@ -53,6 +54,40 @@ test('maps stable Postoo error codes to English messages', () => {
 		'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
 	);
 	assert.equal(getPostooErrorMessage('new_error_code'), 'Postoo returned an error.');
+});
+
+test('does not promise durable idempotent replay in the node UI', () => {
+	const property = new Postoo().description.properties.find(
+		(candidate) => candidate.name === 'idempotencyKey',
+	);
+
+	assert.match(property.description, /does not guarantee durable replay or deduplication/);
+	assert.doesNotMatch(property.description, /return the original post/);
+});
+
+test('blocks publish before the provider call when Retry On Fail is enabled', async () => {
+	let requestCalls = 0;
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			requestCalls += 1;
+		},
+		false,
+		{ retryOnFail: true },
+	);
+
+	await assert.rejects(
+		() => new Postoo().execute.call(context),
+		/Disable "Retry On Fail" for Postoo publish operations/,
+	);
+	assert.equal(requestCalls, 0);
 });
 
 test('publishes with authenticated helper, media, idempotency, and item pairing', async () => {
@@ -168,6 +203,63 @@ test('returns a safe English error when continue-on-fail is enabled', async () =
 					error: 'account_not_found',
 					message: 'The selected social account was not found.',
 					requestId: 'request-456',
+				},
+				pairedItem: { item: 0 },
+			},
+		],
+	]);
+});
+
+test('treats an unstructured publish transport failure as an unknown outcome', async () => {
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			throw new Error('socket reset');
+		},
+	);
+
+	await assert.rejects(() => new Postoo().execute.call(context), (error) => {
+		assert.equal(
+			error.message,
+			'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
+		);
+		assert.match(error.description, /Postoo error code: publish_failed_unknown/);
+		return true;
+	});
+});
+
+test('returns the unknown-outcome code for an unstructured publish failure with continue-on-fail', async () => {
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			throw new Error('socket reset');
+		},
+		true,
+	);
+
+	const output = await new Postoo().execute.call(context);
+
+	assert.deepEqual(output, [
+		[
+			{
+				json: {
+					error: 'publish_failed_unknown',
+					message:
+						'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
 				},
 				pairedItem: { item: 0 },
 			},

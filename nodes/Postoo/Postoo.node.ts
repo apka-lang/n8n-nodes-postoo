@@ -106,8 +106,14 @@ export function getPostooErrorMessage(code: string): string {
 	return POSTOO_ERROR_MESSAGES[code] ?? 'Postoo returned an error.';
 }
 
-function createPostooApiError(node: INode, error: unknown, itemIndex?: number): NodeApiError {
-	const details = getPostooErrorDetails(error);
+function createPostooApiError(
+	node: INode,
+	error: unknown,
+	itemIndex?: number,
+	fallbackCode?: string,
+): NodeApiError {
+	const details =
+		getPostooErrorDetails(error) ?? (fallbackCode === undefined ? undefined : { code: fallbackCode });
 	const message = details ? getPostooErrorMessage(details.code) : 'The Postoo API request failed.';
 	const descriptionParts = details
 		? [`Postoo error code: ${details.code}.`]
@@ -228,7 +234,7 @@ export class Postoo implements INodeType {
 				default: '',
 				displayOptions: { show: { resource: ['post'], operation: ['publish'] } },
 				description:
-					'Optional 8 to 128 character key; retries with the same key return the original post instead of creating a duplicate',
+						'Optional 8 to 128 character correlation key for forward compatibility; the current Postoo API does not guarantee durable replay or deduplication',
 			},
 			{
 				displayName: 'Operation',
@@ -283,10 +289,18 @@ export class Postoo implements INodeType {
 		const credentials = await this.getCredentials('postooApi');
 
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-			try {
-				const resource = this.getNodeParameter('resource', itemIndex) as string;
-				const operation = this.getNodeParameter('operation', itemIndex) as string;
+			const resource = this.getNodeParameter('resource', itemIndex) as string;
+			const operation = this.getNodeParameter('operation', itemIndex) as string;
 
+			if (resource === 'post' && operation === 'publish' && this.getNode().retryOnFail) {
+				throw new NodeOperationError(
+					this.getNode(),
+					'Disable "Retry On Fail" for Postoo publish operations. The Postoo API cannot safely replay an ambiguous publication, and an automatic retry may create a duplicate post.',
+					{ itemIndex },
+				);
+			}
+
+			try {
 				if (resource === 'post' && operation === 'publish') {
 					const socialAccountId = this.getNodeParameter('socialAccountId', itemIndex) as string;
 					const content = this.getNodeParameter('content', itemIndex) as string;
@@ -349,8 +363,12 @@ export class Postoo implements INodeType {
 					);
 				}
 			} catch (error) {
-				const details = getPostooErrorDetails(error);
-				const apiError = createPostooApiError(this.getNode(), error, itemIndex);
+				const fallbackCode =
+					resource === 'post' && operation === 'publish' ? 'publish_failed_unknown' : undefined;
+				const details =
+					getPostooErrorDetails(error) ??
+					(fallbackCode === undefined ? undefined : { code: fallbackCode });
+				const apiError = createPostooApiError(this.getNode(), error, itemIndex, fallbackCode);
 
 				if (this.continueOnFail()) {
 					returnData.push({

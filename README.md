@@ -34,6 +34,8 @@ Publishes one post to one connected social account using `POST /publish`.
 - **Media URL**: Optional public image or video URL.
 - **Idempotency Key**: Optional 8 to 128 character key. Use a stable value derived from your source record and target account for correlation and forward compatibility. The current Postoo API does not yet guarantee durable replay or deduplication.
 
+Keep n8n's **Retry On Fail** setting disabled for this operation. The node refuses to start a publish while that setting is enabled because an automatic retry after an ambiguous provider outcome can create a duplicate post.
+
 The operation returns the external post ID, platform, and publication status.
 
 ### Account → List
