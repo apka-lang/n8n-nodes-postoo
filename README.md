@@ -36,6 +36,10 @@ Publishes one post to one connected social account using `POST /publish`.
 
 Keep n8n's **Retry On Fail** setting disabled for this operation. The node refuses to start a publish while that setting is enabled because an automatic retry after an ambiguous provider outcome can create a duplicate post.
 
+For the same reason, publishing is blocked when the node runs as an AI Agent tool. Use a regular workflow step so a human-controlled workflow decides how to handle an ambiguous result.
+
+When the node receives multiple input items, set **On Error** to continue with per-item output. The node blocks a multi-item publish otherwise: if a later item failed, n8n could discard an earlier successful result and a rerun could publish that earlier item twice.
+
 The operation returns the external post ID, platform, and publication status.
 
 ### Account → List

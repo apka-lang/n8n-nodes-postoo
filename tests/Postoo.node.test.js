@@ -21,6 +21,7 @@ function createNodeContext(parameters, request, continueOnFail = false, nodeOver
 			...nodeOverrides,
 		}),
 		continueOnFail: () => continueOnFail,
+		isToolExecution: () => false,
 		helpers: {
 			httpRequestWithAuthentication: request,
 		},
@@ -88,6 +89,104 @@ test('blocks publish before the provider call when Retry On Fail is enabled', as
 		/Disable "Retry On Fail" for Postoo publish operations/,
 	);
 	assert.equal(requestCalls, 0);
+});
+
+test('blocks publish before the provider call when executed as an AI Agent tool', async () => {
+	let requestCalls = 0;
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			requestCalls += 1;
+		},
+	);
+	context.isToolExecution = () => true;
+
+	await assert.rejects(() => new Postoo().execute.call(context), /cannot run as an AI Agent tool/);
+	assert.equal(requestCalls, 0);
+});
+
+test('blocks multi-item publish before any provider call unless per-item errors are preserved', async () => {
+	let requestCalls = 0;
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			requestCalls += 1;
+		},
+	);
+	context.getInputData = () => [
+		{ json: { sourceId: 'source-1' } },
+		{ json: { sourceId: 'source-2' } },
+	];
+
+	await assert.rejects(
+		() => new Postoo().execute.call(context),
+		/continue with per-item output before publishing multiple input items/,
+	);
+	assert.equal(requestCalls, 0);
+});
+
+test('preserves each result when multi-item publish continues on error', async () => {
+	let requestCalls = 0;
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			requestCalls += 1;
+			if (requestCalls === 1) {
+				return {
+					data: {
+						externalPostId: 'external-1',
+						platform: 'linkedin',
+						status: 'published',
+					},
+				};
+			}
+			throw {
+				response: {
+					body: { error: { code: 'account_not_found', requestId: 'request-2' } },
+				},
+			};
+		},
+		true,
+	);
+	context.getInputData = () => [
+		{ json: { sourceId: 'source-1' } },
+		{ json: { sourceId: 'source-2' } },
+	];
+
+	const output = await new Postoo().execute.call(context);
+
+	assert.equal(requestCalls, 2);
+	assert.equal(output[0][0].json.externalPostId, 'external-1');
+	assert.deepEqual(output[0][0].pairedItem, { item: 0 });
+	assert.deepEqual(output[0][1], {
+		json: {
+			error: 'account_not_found',
+			message: 'The selected social account was not found.',
+			requestId: 'request-2',
+		},
+		pairedItem: { item: 1 },
+	});
 });
 
 test('publishes with authenticated helper, media, idempotency, and item pairing', async () => {
@@ -225,14 +324,17 @@ test('treats an unstructured publish transport failure as an unknown outcome', a
 		},
 	);
 
-	await assert.rejects(() => new Postoo().execute.call(context), (error) => {
-		assert.equal(
-			error.message,
-			'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
-		);
-		assert.match(error.description, /Postoo error code: publish_failed_unknown/);
-		return true;
-	});
+	await assert.rejects(
+		() => new Postoo().execute.call(context),
+		(error) => {
+			assert.equal(
+				error.message,
+				'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
+			);
+			assert.match(error.description, /Postoo error code: publish_failed_unknown/);
+			return true;
+		},
+	);
 });
 
 test('returns the unknown-outcome code for an unstructured publish failure with continue-on-fail', async () => {
@@ -265,6 +367,33 @@ test('returns the unknown-outcome code for an unstructured publish failure with 
 			},
 		],
 	]);
+});
+
+test('does not report an unknown publication when local preparation fails before the request', async () => {
+	let requestCalls = 0;
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: 42,
+			idempotencyKey: '',
+		},
+		async function request() {
+			requestCalls += 1;
+		},
+	);
+
+	await assert.rejects(
+		() => new Postoo().execute.call(context),
+		(error) => {
+			assert.equal(error.message, 'The Postoo API request failed.');
+			assert.doesNotMatch(error.description, /publish_failed_unknown/);
+			return true;
+		},
+	);
+	assert.equal(requestCalls, 0);
 });
 
 test('lists connected accounts and preserves the source item link', async () => {
