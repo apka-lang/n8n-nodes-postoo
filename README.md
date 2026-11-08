@@ -32,7 +32,13 @@ Publishes one post to one connected social account using `POST /publish`.
 - **Social Account Name or ID**: Choose a connected account or provide its Postoo account ID with an expression.
 - **Content**: Plain-text post content, up to 5,000 characters.
 - **Media URL**: Optional public image or video URL.
-- **Idempotency Key**: Optional 8 to 128 character key. Reusing the same key makes retries safe and avoids duplicate posts.
+- **Idempotency Key**: Optional 8 to 128 character key. Use a stable value derived from your source record and target account for correlation and forward compatibility. The current Postoo API does not yet guarantee durable replay or deduplication.
+
+Keep n8n's **Retry On Fail** setting disabled for this operation. The node refuses to start a publish while that setting is enabled because an automatic retry after an ambiguous provider outcome can create a duplicate post.
+
+For the same reason, publishing is blocked when the node runs as an AI Agent tool. Use a regular workflow step so a human-controlled workflow decides how to handle an ambiguous result.
+
+When the node receives multiple input items, set **On Error** to continue with per-item output. The node blocks a multi-item publish otherwise: if a later item failed, n8n could discard an earlier successful result and a rerun could publish that earlier item twice.
 
 The operation returns the external post ID, platform, and publication status.
 
@@ -50,7 +56,7 @@ Lists the social accounts connected to the Postoo workspace using `GET /accounts
           → [Postoo: Publish to TikTok]
 ```
 
-For retries, use a stable idempotency key derived from your source record and target account, such as `post-{{$json.id}}-{{$json.accountId}}`.
+Use a stable idempotency key derived from your source record and target account, such as `post-{{$json.id}}-{{$json.accountId}}`. Do not automatically retry an ambiguous publication: the current API can return an unknown outcome without a durable operation to replay.
 
 ## Errors and rate limits
 
@@ -63,6 +69,12 @@ Postoo errors are returned in English with a stable code and request ID where av
 - `account_disconnected`
 - `publish_rejected`
 - `publish_failed_unknown`
+
+`publish_failed_unknown` means Postoo cannot confirm whether the provider accepted the post. Do not retry automatically. First inspect the destination account at the social provider; a blind retry can create a duplicate post.
+
+The node also reports an unknown outcome when Postoo returns an unrecognized publish error code or an incomplete success response without a valid external post ID, platform, and status.
+
+For an unrecognized structured error, the diagnostic retains the original code as `providerCode` and includes `requestId` when Postoo supplies one.
 
 Default API limits:
 
@@ -79,6 +91,8 @@ npx @n8n/scan-community-package n8n-nodes-postoo
 ```
 
 Releases are published from GitHub Actions with npm provenance. Local `npm publish` is intentionally not part of the release process.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

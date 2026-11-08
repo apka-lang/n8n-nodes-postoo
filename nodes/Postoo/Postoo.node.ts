@@ -37,6 +37,7 @@ interface PostooAccountsResponse {
 export interface PostooErrorDetails {
 	code: string;
 	requestId?: string;
+	providerCode?: string;
 }
 
 export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
@@ -46,7 +47,8 @@ export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
 	account_inactive: 'The selected social account is inactive.',
 	account_disconnected: 'The selected social account is disconnected. Reconnect it in Postoo.',
 	publish_rejected: 'The social network rejected the post. Check the content and media.',
-	publish_failed_unknown: 'Postoo could not publish the post. Try again later.',
+	publish_failed_unknown:
+		'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -101,12 +103,56 @@ export function getPostooErrorDetails(error: unknown): PostooErrorDetails | unde
 	return undefined;
 }
 
+function resolvePostooErrorDetails(
+	error: unknown,
+	fallbackCode?: string,
+): PostooErrorDetails | undefined {
+	const details = getPostooErrorDetails(error);
+	if (
+		fallbackCode === undefined ||
+		(details !== undefined &&
+			Object.prototype.hasOwnProperty.call(POSTOO_ERROR_MESSAGES, details.code))
+	) {
+		return details ?? (fallbackCode === undefined ? undefined : { code: fallbackCode });
+	}
+
+	return {
+		code: fallbackCode,
+		...(details?.requestId ? { requestId: details.requestId } : {}),
+		...(details?.code ? { providerCode: details.code } : {}),
+	};
+}
+
+function parsePublishResponse(value: unknown): PostooPublishResponse['data'] | undefined {
+	const data = asRecord(asRecord(value)?.data);
+	if (
+		typeof data?.externalPostId !== 'string' ||
+		!data.externalPostId.trim() ||
+		typeof data.platform !== 'string' ||
+		!data.platform.trim() ||
+		(data.status !== 'published' && data.status !== 'scheduled')
+	) {
+		return undefined;
+	}
+
+	return {
+		externalPostId: data.externalPostId,
+		platform: data.platform,
+		status: data.status,
+	};
+}
+
 export function getPostooErrorMessage(code: string): string {
 	return POSTOO_ERROR_MESSAGES[code] ?? 'Postoo returned an error.';
 }
 
-function createPostooApiError(node: INode, error: unknown, itemIndex?: number): NodeApiError {
-	const details = getPostooErrorDetails(error);
+function createPostooApiError(
+	node: INode,
+	error: unknown,
+	itemIndex?: number,
+	fallbackCode?: string,
+): NodeApiError {
+	const details = resolvePostooErrorDetails(error, fallbackCode);
 	const message = details ? getPostooErrorMessage(details.code) : 'The Postoo API request failed.';
 	const descriptionParts = details
 		? [`Postoo error code: ${details.code}.`]
@@ -115,6 +161,9 @@ function createPostooApiError(node: INode, error: unknown, itemIndex?: number): 
 	if (details?.requestId) {
 		descriptionParts.push(`Request ID: ${details.requestId}.`);
 	}
+	if (details?.providerCode) {
+		descriptionParts.push(`Provider error code: ${details.providerCode}.`);
+	}
 
 	return new NodeApiError(
 		node,
@@ -122,6 +171,7 @@ function createPostooApiError(node: INode, error: unknown, itemIndex?: number): 
 			message,
 			...(details?.code ? { code: details.code } : {}),
 			...(details?.requestId ? { requestId: details.requestId } : {}),
+			...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 		} as JsonObject,
 		{
 			message,
@@ -227,7 +277,7 @@ export class Postoo implements INodeType {
 				default: '',
 				displayOptions: { show: { resource: ['post'], operation: ['publish'] } },
 				description:
-					'Optional 8 to 128 character key; retries with the same key return the original post instead of creating a duplicate',
+					'Optional 8 to 128 character correlation key for forward compatibility; the current Postoo API does not guarantee durable replay or deduplication',
 			},
 			{
 				displayName: 'Operation',
@@ -279,14 +329,49 @@ export class Postoo implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
-		const credentials = await this.getCredentials('postooApi');
 
-		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-			try {
+		if (items.length > 1 && !this.continueOnFail()) {
+			for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 				const resource = this.getNodeParameter('resource', itemIndex) as string;
 				const operation = this.getNodeParameter('operation', itemIndex) as string;
 
 				if (resource === 'post' && operation === 'publish') {
+					throw new NodeOperationError(
+						this.getNode(),
+						'Set the node\'s "On Error" behavior to continue with per-item output before publishing multiple input items. Otherwise, a later item failure can hide an earlier successful publication and make a rerun create a duplicate post.',
+						{ itemIndex },
+					);
+				}
+			}
+		}
+
+		const credentials = await this.getCredentials('postooApi');
+
+		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+			const resource = this.getNodeParameter('resource', itemIndex) as string;
+			const operation = this.getNodeParameter('operation', itemIndex) as string;
+			const isPublish = resource === 'post' && operation === 'publish';
+
+			if (isPublish && this.getNode().retryOnFail) {
+				throw new NodeOperationError(
+					this.getNode(),
+					'Disable "Retry On Fail" for Postoo publish operations. The Postoo API cannot safely replay an ambiguous publication, and an automatic retry may create a duplicate post.',
+					{ itemIndex },
+				);
+			}
+
+			if (isPublish && this.isToolExecution()) {
+				throw new NodeOperationError(
+					this.getNode(),
+					'Postoo publish operations cannot run as an AI Agent tool. An agent could repeat an ambiguous publication and create a duplicate post. Run the node as a regular workflow step instead.',
+					{ itemIndex },
+				);
+			}
+
+			let publishRequestStarted = false;
+
+			try {
+				if (isPublish) {
 					const socialAccountId = this.getNodeParameter('socialAccountId', itemIndex) as string;
 					const content = this.getNodeParameter('content', itemIndex) as string;
 					const mediaUrl = this.getNodeParameter('mediaUrl', itemIndex, '') as string;
@@ -305,7 +390,8 @@ export class Postoo implements INodeType {
 						headers['Idempotency-Key'] = idempotencyKey.trim();
 					}
 
-					const response = (await this.helpers.httpRequestWithAuthentication.call(
+					publishRequestStarted = true;
+					const response = await this.helpers.httpRequestWithAuthentication.call(
 						this,
 						'postooApi',
 						{
@@ -316,10 +402,18 @@ export class Postoo implements INodeType {
 							body,
 							json: true,
 						},
-					)) as PostooPublishResponse;
+					);
+					const publishData = parsePublishResponse(response);
+					if (!publishData) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Postoo returned an invalid publish response.',
+							{ itemIndex },
+						);
+					}
 
 					returnData.push({
-						json: response.data as unknown as IDataObject,
+						json: publishData as unknown as IDataObject,
 						pairedItem: { item: itemIndex },
 					});
 				} else if (resource === 'account' && operation === 'list') {
@@ -348,8 +442,10 @@ export class Postoo implements INodeType {
 					);
 				}
 			} catch (error) {
-				const details = getPostooErrorDetails(error);
-				const apiError = createPostooApiError(this.getNode(), error, itemIndex);
+				const fallbackCode =
+					isPublish && publishRequestStarted ? 'publish_failed_unknown' : undefined;
+				const details = resolvePostooErrorDetails(error, fallbackCode);
+				const apiError = createPostooApiError(this.getNode(), error, itemIndex, fallbackCode);
 
 				if (this.continueOnFail()) {
 					returnData.push({
@@ -359,6 +455,7 @@ export class Postoo implements INodeType {
 								? getPostooErrorMessage(details.code)
 								: 'The Postoo API request failed.',
 							...(details?.requestId ? { requestId: details.requestId } : {}),
+							...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 						},
 						pairedItem: { item: itemIndex },
 					});
