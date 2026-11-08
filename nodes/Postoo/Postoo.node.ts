@@ -37,6 +37,7 @@ interface PostooAccountsResponse {
 export interface PostooErrorDetails {
 	code: string;
 	requestId?: string;
+	providerCode?: string;
 }
 
 export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
@@ -102,6 +103,45 @@ export function getPostooErrorDetails(error: unknown): PostooErrorDetails | unde
 	return undefined;
 }
 
+function resolvePostooErrorDetails(
+	error: unknown,
+	fallbackCode?: string,
+): PostooErrorDetails | undefined {
+	const details = getPostooErrorDetails(error);
+	if (
+		fallbackCode === undefined ||
+		(details !== undefined &&
+			Object.prototype.hasOwnProperty.call(POSTOO_ERROR_MESSAGES, details.code))
+	) {
+		return details ?? (fallbackCode === undefined ? undefined : { code: fallbackCode });
+	}
+
+	return {
+		code: fallbackCode,
+		...(details?.requestId ? { requestId: details.requestId } : {}),
+		...(details?.code ? { providerCode: details.code } : {}),
+	};
+}
+
+function parsePublishResponse(value: unknown): PostooPublishResponse['data'] | undefined {
+	const data = asRecord(asRecord(value)?.data);
+	if (
+		typeof data?.externalPostId !== 'string' ||
+		!data.externalPostId.trim() ||
+		typeof data.platform !== 'string' ||
+		!data.platform.trim() ||
+		(data.status !== 'published' && data.status !== 'scheduled')
+	) {
+		return undefined;
+	}
+
+	return {
+		externalPostId: data.externalPostId,
+		platform: data.platform,
+		status: data.status,
+	};
+}
+
 export function getPostooErrorMessage(code: string): string {
 	return POSTOO_ERROR_MESSAGES[code] ?? 'Postoo returned an error.';
 }
@@ -112,9 +152,7 @@ function createPostooApiError(
 	itemIndex?: number,
 	fallbackCode?: string,
 ): NodeApiError {
-	const details =
-		getPostooErrorDetails(error) ??
-		(fallbackCode === undefined ? undefined : { code: fallbackCode });
+	const details = resolvePostooErrorDetails(error, fallbackCode);
 	const message = details ? getPostooErrorMessage(details.code) : 'The Postoo API request failed.';
 	const descriptionParts = details
 		? [`Postoo error code: ${details.code}.`]
@@ -123,6 +161,9 @@ function createPostooApiError(
 	if (details?.requestId) {
 		descriptionParts.push(`Request ID: ${details.requestId}.`);
 	}
+	if (details?.providerCode) {
+		descriptionParts.push(`Provider error code: ${details.providerCode}.`);
+	}
 
 	return new NodeApiError(
 		node,
@@ -130,6 +171,7 @@ function createPostooApiError(
 			message,
 			...(details?.code ? { code: details.code } : {}),
 			...(details?.requestId ? { requestId: details.requestId } : {}),
+			...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 		} as JsonObject,
 		{
 			message,
@@ -349,7 +391,7 @@ export class Postoo implements INodeType {
 					}
 
 					publishRequestStarted = true;
-					const response = (await this.helpers.httpRequestWithAuthentication.call(
+					const response = await this.helpers.httpRequestWithAuthentication.call(
 						this,
 						'postooApi',
 						{
@@ -360,10 +402,18 @@ export class Postoo implements INodeType {
 							body,
 							json: true,
 						},
-					)) as PostooPublishResponse;
+					);
+					const publishData = parsePublishResponse(response);
+					if (!publishData) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Postoo returned an invalid publish response.',
+							{ itemIndex },
+						);
+					}
 
 					returnData.push({
-						json: response.data as unknown as IDataObject,
+						json: publishData as unknown as IDataObject,
 						pairedItem: { item: itemIndex },
 					});
 				} else if (resource === 'account' && operation === 'list') {
@@ -394,9 +444,7 @@ export class Postoo implements INodeType {
 			} catch (error) {
 				const fallbackCode =
 					isPublish && publishRequestStarted ? 'publish_failed_unknown' : undefined;
-				const details =
-					getPostooErrorDetails(error) ??
-					(fallbackCode === undefined ? undefined : { code: fallbackCode });
+				const details = resolvePostooErrorDetails(error, fallbackCode);
 				const apiError = createPostooApiError(this.getNode(), error, itemIndex, fallbackCode);
 
 				if (this.continueOnFail()) {
@@ -407,6 +455,7 @@ export class Postoo implements INodeType {
 								? getPostooErrorMessage(details.code)
 								: 'The Postoo API request failed.',
 							...(details?.requestId ? { requestId: details.requestId } : {}),
+							...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 						},
 						pairedItem: { item: itemIndex },
 					});

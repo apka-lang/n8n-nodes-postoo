@@ -369,6 +369,87 @@ test('returns the unknown-outcome code for an unstructured publish failure with 
 	]);
 });
 
+test('treats an unrecognized structured publish error as an unknown outcome', async () => {
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'A test post',
+			mediaUrl: '',
+			idempotencyKey: '',
+		},
+		async function request() {
+			throw {
+				response: {
+					body: {
+						error: {
+							code: 'unexpected_internal_error',
+							requestId: 'request-unknown',
+						},
+					},
+				},
+			};
+		},
+		true,
+	);
+
+	const output = await new Postoo().execute.call(context);
+
+	assert.deepEqual(output, [
+		[
+			{
+				json: {
+					error: 'publish_failed_unknown',
+					message:
+						'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
+					requestId: 'request-unknown',
+					providerCode: 'unexpected_internal_error',
+				},
+				pairedItem: { item: 0 },
+			},
+		],
+	]);
+});
+
+test('treats malformed publish success responses as unknown outcomes', async () => {
+	const malformedResponses = [
+		{},
+		{ data: {} },
+		{ data: { externalPostId: '', platform: 'linkedin', status: 'published' } },
+		{ data: { externalPostId: 'external-1', platform: '', status: 'published' } },
+		{ data: { externalPostId: 'external-1', platform: 'linkedin', status: 'unknown' } },
+	];
+
+	for (const response of malformedResponses) {
+		const context = createNodeContext(
+			{
+				resource: 'post',
+				operation: 'publish',
+				socialAccountId: 'account-1',
+				content: 'A test post',
+				mediaUrl: '',
+				idempotencyKey: '',
+			},
+			async function request() {
+				return response;
+			},
+		);
+
+		await assert.rejects(
+			() => new Postoo().execute.call(context),
+			(error) => {
+				assert.equal(
+					error.message,
+					'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
+				);
+				assert.match(error.description, /Postoo error code: publish_failed_unknown/);
+				return true;
+			},
+		);
+	}
+});
+
 test('does not report an unknown publication when local preparation fails before the request', async () => {
 	let requestCalls = 0;
 	const context = createNodeContext(

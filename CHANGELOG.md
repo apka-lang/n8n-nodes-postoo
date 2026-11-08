@@ -2,13 +2,17 @@
 
 All notable changes to this package are documented here.
 
-## 0.1.2
+## [0.1.2] - 2026-11-08
 
-- Correct the idempotency guidance: the current Postoo API does not guarantee durable replay or deduplication.
-- Block publish operations when n8n's **Retry On Fail** setting is enabled.
-- Block publish operations when the node runs as an AI Agent tool.
-- Require per-item error output for multi-item publishes so a later failure cannot hide an earlier success.
-- Treat unstructured publish transport failures as unknown outcomes so they are not presented as safe to retry.
+### Changed
+
+- Explain that idempotency keys currently provide correlation and forward compatibility, not guaranteed replay or deduplication.
+- Require **On Error** to preserve per-item output before publishing multiple input items, so a later failure cannot hide an earlier successful post.
+
+### Fixed
+
+- Block publishes that n8n could repeat automatically through **Retry On Fail** or AI Agent tool execution.
+- Report unstructured failures, unrecognized error codes, and malformed success responses at the publish request boundary as unknown outcomes, with guidance to inspect the destination before any manual retry.
 
 ## 0.1.0
 

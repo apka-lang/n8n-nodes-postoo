@@ -72,6 +72,10 @@ Postoo errors are returned in English with a stable code and request ID where av
 
 `publish_failed_unknown` means Postoo cannot confirm whether the provider accepted the post. Do not retry automatically. First inspect the destination account at the social provider; a blind retry can create a duplicate post.
 
+The node also reports an unknown outcome when Postoo returns an unrecognized publish error code or an incomplete success response without a valid external post ID, platform, and status.
+
+For an unrecognized structured error, the diagnostic retains the original code as `providerCode` and includes `requestId` when Postoo supplies one.
+
 Default API limits:
 
 - Publish requests: 60 per hour for each API key.
@@ -87,6 +91,8 @@ npx @n8n/scan-community-package n8n-nodes-postoo
 ```
 
 Releases are published from GitHub Actions with npm provenance. Local `npm publish` is intentionally not part of the release process.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
