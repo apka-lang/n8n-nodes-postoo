@@ -596,3 +596,39 @@ test('passes Meta details and the Postoo request ID through to the failure item'
 		providerError,
 	});
 });
+
+test('routes a wrapped n8n HTTP rejection to the error output without losing diagnostics', async () => {
+	const { NodeApiError } = require('n8n-workflow');
+	const providerError = { code: 100, error_subcode: 2207026, fbtrace_id: 'trace-123' };
+	const context = createNodeContext(
+		{ resource: 'post', operation: 'getPublishStatus', publishId: 'publish-123' },
+		async () => {
+			const error = Object.assign(new Error('Meta rejected the Reel'), {
+				response: {
+					status: 422,
+					data: {
+						error: {
+							code: 'publish_rejected',
+							requestId: 'request-123',
+							details: { publishId: 'publish-123', publishRequestId: 'origin-123', providerError },
+						},
+					},
+				},
+			});
+			throw new NodeApiError(context.getNode(), error);
+		},
+		true,
+		{ onError: 'continueErrorOutput' },
+	);
+	const [[item]] = await new Postoo().execute.call(context);
+	assert(item.error instanceof NodeApiError);
+	assert.deepEqual(item.json, {
+		error: 'publish_rejected',
+		message: getPostooErrorMessage('publish_rejected'),
+		requestId: 'request-123',
+		publishId: 'publish-123',
+		publishRequestId: 'origin-123',
+		providerError,
+	});
+	assert.deepEqual(item.error.context.data.providerError, providerError);
+});

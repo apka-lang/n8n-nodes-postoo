@@ -41,6 +41,7 @@ export interface PostooErrorDetails {
 	providerCode?: string;
 	providerError?: IDataObject;
 	publishRequestId?: string;
+	publishId?: string;
 }
 
 export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
@@ -87,6 +88,7 @@ function parseErrorEnvelope(value: unknown): PostooErrorDetails | undefined {
 	return {
 		code: error.code,
 		...(providerError ? { providerError } : {}),
+		...(typeof errorDetails?.publishId === 'string' ? { publishId: errorDetails.publishId } : {}),
 		...(typeof errorDetails?.publishRequestId === 'string'
 			? { publishRequestId: errorDetails.publishRequestId }
 			: {}),
@@ -99,10 +101,12 @@ export function getPostooErrorDetails(error: unknown): PostooErrorDetails | unde
 	const response = asRecord(root?.response);
 	const cause = asRecord(root?.cause);
 	const causeResponse = asRecord(cause?.response);
+	const context = asRecord(root?.context);
 	const candidates = [
 		root,
 		response?.body,
 		response?.data,
+		context?.data,
 		causeResponse?.body,
 		causeResponse?.data,
 	];
@@ -136,6 +140,7 @@ function resolvePostooErrorDetails(
 		...(details?.code ? { providerCode: details.code } : {}),
 		...(details?.providerError ? { providerError: details.providerError } : {}),
 		...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
+		...(details?.publishId ? { publishId: details.publishId } : {}),
 	};
 }
 
@@ -185,7 +190,7 @@ function createPostooApiError(
 		descriptionParts.push(`Provider error code: ${details.providerCode}.`);
 	}
 
-	return new NodeApiError(
+	const apiError = new NodeApiError(
 		node,
 		{
 			message,
@@ -194,6 +199,7 @@ function createPostooApiError(
 			...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 			...(details?.providerError ? { providerError: details.providerError } : {}),
 			...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
+			...(details?.publishId ? { publishId: details.publishId } : {}),
 		} as JsonObject,
 		{
 			message,
@@ -201,6 +207,8 @@ function createPostooApiError(
 			...(itemIndex === undefined ? {} : { itemIndex }),
 		},
 	);
+	if (details?.providerError) apiError.context.data = { ...details };
+	return apiError;
 }
 
 export class Postoo implements INodeType {
@@ -435,7 +443,7 @@ export class Postoo implements INodeType {
 						body.mediaUrls = [mediaUrl.trim()];
 					}
 
-					if (mediaType === 'reel') body.mediaType = 'reel';
+					if (mediaType !== 'image') body.mediaType = mediaType;
 
 					const headers: Record<string, string> = {};
 					if (idempotencyKey.trim()) {
@@ -534,8 +542,10 @@ export class Postoo implements INodeType {
 							...(details?.providerCode ? { providerCode: details.providerCode } : {}),
 							...(details?.providerError ? { providerError: details.providerError } : {}),
 							...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
+							...(details?.publishId ? { publishId: details.publishId } : {}),
 						},
 						pairedItem: { item: itemIndex },
+						...(this.getNode().onError === 'continueErrorOutput' ? { error: apiError } : {}),
 					});
 					continue;
 				}
