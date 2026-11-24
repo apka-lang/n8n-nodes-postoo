@@ -20,13 +20,14 @@ interface PostooAccount {
 	status: string;
 }
 
-interface PostooPublishResponse {
-	data: {
-		externalPostId: string;
-		platform: string;
-		status: 'published' | 'scheduled';
-	};
-}
+type PostooPublishData =
+	| { status: 'processing'; externalPostId: null; publishId: string; platform: string }
+	| {
+			status: 'published' | 'scheduled';
+			externalPostId: string;
+			publishId?: string;
+			platform: string;
+	  };
 
 interface PostooAccountsResponse {
 	data: {
@@ -38,6 +39,8 @@ export interface PostooErrorDetails {
 	code: string;
 	requestId?: string;
 	providerCode?: string;
+	providerError?: IDataObject;
+	publishRequestId?: string;
 }
 
 export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
@@ -46,6 +49,11 @@ export const POSTOO_ERROR_MESSAGES: Record<string, string> = {
 	account_not_found: 'The selected social account was not found.',
 	account_inactive: 'The selected social account is inactive.',
 	account_disconnected: 'The selected social account is disconnected. Reconnect it in Postoo.',
+	idempotency_key_conflict: 'This idempotency key was already used with different post data.',
+	publish_in_progress: 'A publish request using this idempotency key is still in progress.',
+	not_found: 'The publish operation was not found.',
+	invalid_request:
+		'Postoo rejected the publish settings. Check the media, account, and idempotency key.',
 	publish_rejected: 'The social network rejected the post. Check the content and media.',
 	publish_failed_unknown:
 		'Postoo cannot confirm whether the post was published. Do not retry automatically. Check the destination account at the social provider before any manual retry.',
@@ -74,8 +82,14 @@ function parseErrorEnvelope(value: unknown): PostooErrorDetails | undefined {
 		return undefined;
 	}
 
+	const errorDetails = asRecord(error.details);
+	const providerError = asRecord(errorDetails?.providerError) as IDataObject | undefined;
 	return {
 		code: error.code,
+		...(providerError ? { providerError } : {}),
+		...(typeof errorDetails?.publishRequestId === 'string'
+			? { publishRequestId: errorDetails.publishRequestId }
+			: {}),
 		...(typeof error.requestId === 'string' ? { requestId: error.requestId } : {}),
 	};
 }
@@ -120,26 +134,32 @@ function resolvePostooErrorDetails(
 		code: fallbackCode,
 		...(details?.requestId ? { requestId: details.requestId } : {}),
 		...(details?.code ? { providerCode: details.code } : {}),
+		...(details?.providerError ? { providerError: details.providerError } : {}),
+		...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
 	};
 }
 
-function parsePublishResponse(value: unknown): PostooPublishResponse['data'] | undefined {
+function parsePublishResponse(value: unknown): PostooPublishData | undefined {
 	const data = asRecord(asRecord(value)?.data);
-	if (
-		typeof data?.externalPostId !== 'string' ||
-		!data.externalPostId.trim() ||
-		typeof data.platform !== 'string' ||
-		!data.platform.trim() ||
-		(data.status !== 'published' && data.status !== 'scheduled')
-	) {
-		return undefined;
+	if (!data || typeof data.platform !== 'string' || !data.platform.trim()) return;
+	const publishId =
+		typeof data.publishId === 'string' && data.publishId.trim() ? data.publishId : undefined;
+	if (data.status === 'processing' && data.externalPostId === null && publishId) {
+		return { status: data.status, platform: data.platform, externalPostId: null, publishId };
 	}
-
-	return {
-		externalPostId: data.externalPostId,
-		platform: data.platform,
-		status: data.status,
-	};
+	if (
+		(data.status === 'published' || data.status === 'scheduled') &&
+		typeof data.externalPostId === 'string' &&
+		data.externalPostId.trim()
+	) {
+		return {
+			status: data.status,
+			platform: data.platform,
+			externalPostId: data.externalPostId,
+			...(publishId ? { publishId } : {}),
+		};
+	}
+	return undefined;
 }
 
 export function getPostooErrorMessage(code: string): string {
@@ -172,6 +192,8 @@ function createPostooApiError(
 			...(details?.code ? { code: details.code } : {}),
 			...(details?.requestId ? { requestId: details.requestId } : {}),
 			...(details?.providerCode ? { providerCode: details.providerCode } : {}),
+			...(details?.providerError ? { providerError: details.providerError } : {}),
+			...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
 		} as JsonObject,
 		{
 			message,
@@ -235,6 +257,12 @@ export class Postoo implements INodeType {
 						description: 'Publish a post to a connected social account',
 						action: 'Publish a post',
 					},
+					{
+						name: 'Get Publish Status',
+						value: 'getPublishStatus',
+						description: 'Get the status of an accepted publish operation',
+						action: 'Get publish status',
+					},
 				],
 				default: 'publish',
 			},
@@ -262,13 +290,34 @@ export class Postoo implements INodeType {
 				description: 'The post text, up to 5,000 characters; plain text only',
 			},
 			{
+				displayName: 'Publish ID',
+				name: 'publishId',
+				type: 'string',
+				default: '',
+				required: true,
+				displayOptions: { show: { resource: ['post'], operation: ['getPublishStatus'] } },
+				description: 'The publishId returned by the Postoo Publish operation',
+			},
+			{
+				displayName: 'Media Type',
+				name: 'mediaType',
+				type: 'options',
+				default: 'image',
+				options: [
+					{ name: 'Image', value: 'image' },
+					{ name: 'Reel', value: 'reel' },
+				],
+				displayOptions: { show: { resource: ['post'], operation: ['publish'] } },
+				description: 'Select Reel for a Facebook Page or Instagram Reel',
+			},
+			{
 				displayName: 'Media URL',
 				name: 'mediaUrl',
 				type: 'string',
 				default: '',
 				placeholder: 'https://example.com/image.jpg',
 				displayOptions: { show: { resource: ['post'], operation: ['publish'] } },
-				description: 'Optional public URL of an image or video to attach',
+				description: 'Public image URL, or a direct public MP4 URL for a Reel',
 			},
 			{
 				displayName: 'Idempotency Key',
@@ -277,7 +326,7 @@ export class Postoo implements INodeType {
 				default: '',
 				displayOptions: { show: { resource: ['post'], operation: ['publish'] } },
 				description:
-					'Optional 8 to 128 character correlation key for forward compatibility; the current Postoo API does not guarantee durable replay or deduplication',
+					'Stable key of 8 to 128 characters. Required for Reels. Replay support depends on the Postoo server version.',
 			},
 			{
 				displayName: 'Operation',
@@ -376,6 +425,7 @@ export class Postoo implements INodeType {
 					const content = this.getNodeParameter('content', itemIndex) as string;
 					const mediaUrl = this.getNodeParameter('mediaUrl', itemIndex, '') as string;
 					const idempotencyKey = this.getNodeParameter('idempotencyKey', itemIndex, '') as string;
+					const mediaType = this.getNodeParameter('mediaType', itemIndex, 'image') as string;
 
 					const body: Record<string, unknown> = {
 						socialAccountId,
@@ -384,6 +434,8 @@ export class Postoo implements INodeType {
 					if (mediaUrl.trim()) {
 						body.mediaUrls = [mediaUrl.trim()];
 					}
+
+					if (mediaType === 'reel') body.mediaType = 'reel';
 
 					const headers: Record<string, string> = {};
 					if (idempotencyKey.trim()) {
@@ -412,6 +464,30 @@ export class Postoo implements INodeType {
 						);
 					}
 
+					returnData.push({
+						json: publishData as unknown as IDataObject,
+						pairedItem: { item: itemIndex },
+					});
+				} else if (resource === 'post' && operation === 'getPublishStatus') {
+					const publishId = this.getNodeParameter('publishId', itemIndex) as string;
+					const response = await this.helpers.httpRequestWithAuthentication.call(
+						this,
+						'postooApi',
+						{
+							method: 'GET',
+							baseURL: credentials.baseUrl as string,
+							url: `/publish/${encodeURIComponent(publishId)}`,
+							json: true,
+						},
+					);
+					const publishData = parsePublishResponse(response);
+					if (!publishData) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Postoo returned an invalid status response.',
+							{ itemIndex },
+						);
+					}
 					returnData.push({
 						json: publishData as unknown as IDataObject,
 						pairedItem: { item: itemIndex },
@@ -456,6 +532,8 @@ export class Postoo implements INodeType {
 								: 'The Postoo API request failed.',
 							...(details?.requestId ? { requestId: details.requestId } : {}),
 							...(details?.providerCode ? { providerCode: details.providerCode } : {}),
+							...(details?.providerError ? { providerError: details.providerError } : {}),
+							...(details?.publishRequestId ? { publishRequestId: details.publishRequestId } : {}),
 						},
 						pairedItem: { item: itemIndex },
 					});
