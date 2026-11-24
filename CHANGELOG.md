@@ -2,6 +2,10 @@
 
 All notable changes to this package are documented here.
 
+## [0.2.1]
+
+- Remove unused declarative request defaults from the programmatic Postoo node.
+
 ## [0.2.0]
 
 - Publish an MP4 as a Facebook Page Reel or Instagram Reel on compatible Postoo servers.
