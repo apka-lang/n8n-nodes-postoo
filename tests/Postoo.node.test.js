@@ -57,12 +57,13 @@ test('maps stable Postoo error codes to English messages', () => {
 	assert.equal(getPostooErrorMessage('new_error_code'), 'Postoo returned an error.');
 });
 
-test('does not promise durable idempotent replay in the node UI', () => {
+test('explains the Reel key requirement and server compatibility', () => {
 	const property = new Postoo().description.properties.find(
 		(candidate) => candidate.name === 'idempotencyKey',
 	);
 
-	assert.match(property.description, /does not guarantee durable replay or deduplication/);
+	assert.match(property.description, /Required for Reels/);
+	assert.match(property.description, /depends on the Postoo server version/);
 	assert.doesNotMatch(property.description, /return the original post/);
 });
 
@@ -502,4 +503,132 @@ test('lists connected accounts and preserves the source item link', async () => 
 
 	assert.equal(output[0][0].json.id, 'account-1');
 	assert.deepEqual(output[0][0].pairedItem, { item: 0 });
+});
+
+test('submits a Reel and preserves the pending operation without an external post ID', async () => {
+	const pending = {
+		status: 'processing',
+		platform: 'instagram',
+		publishId: 'publish-123',
+		externalPostId: null,
+	};
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'publish',
+			socialAccountId: 'account-1',
+			content: 'Test Reel',
+			mediaType: 'reel',
+			mediaUrl: 'https://cdn.example/reel.mp4',
+			idempotencyKey: 'reel-123',
+		},
+		async (_credential, request) => {
+			assert.equal(request.method, 'POST');
+			assert.equal(request.url, '/publish');
+			assert.equal(request.headers['Idempotency-Key'], 'reel-123');
+			assert.deepEqual(request.body, {
+				socialAccountId: 'account-1',
+				content: 'Test Reel',
+				mediaType: 'reel',
+				mediaUrls: ['https://cdn.example/reel.mp4'],
+			});
+			return { data: pending };
+		},
+	);
+	assert.deepEqual((await new Postoo().execute.call(context))[0][0].json, pending);
+});
+
+test('checks a publish operation using a read-only request', async () => {
+	const published = {
+		status: 'published',
+		platform: 'facebook',
+		publishId: 'publish-123',
+		externalPostId: '4567',
+	};
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'getPublishStatus',
+			publishId: 'publish-123',
+		},
+		async (_credential, request) => {
+			assert.equal(request.method, 'GET');
+			assert.equal(request.url, '/publish/publish-123');
+			return { data: published };
+		},
+	);
+	assert.deepEqual((await new Postoo().execute.call(context))[0][0].json, published);
+});
+
+test('passes Meta details and the Postoo request ID through to the failure item', async () => {
+	const providerError = {
+		code: 100,
+		error_subcode: 2207026,
+		message: 'Fetch failed',
+		error_user_msg: 'Check the media URL',
+		fbtrace_id: 'trace-123',
+	};
+	const context = createNodeContext(
+		{
+			resource: 'post',
+			operation: 'getPublishStatus',
+			publishId: 'publish-123',
+		},
+		async () => {
+			throw {
+				response: {
+					body: {
+						error: {
+							code: 'publish_rejected',
+							requestId: 'request-123',
+							details: { providerError },
+						},
+					},
+				},
+			};
+		},
+		true,
+	);
+	assert.deepEqual((await new Postoo().execute.call(context))[0][0].json, {
+		error: 'publish_rejected',
+		message: getPostooErrorMessage('publish_rejected'),
+		requestId: 'request-123',
+		providerError,
+	});
+});
+
+test('routes a wrapped n8n HTTP rejection to the error output without losing diagnostics', async () => {
+	const { NodeApiError } = require('n8n-workflow');
+	const providerError = { code: 100, error_subcode: 2207026, fbtrace_id: 'trace-123' };
+	const context = createNodeContext(
+		{ resource: 'post', operation: 'getPublishStatus', publishId: 'publish-123' },
+		async () => {
+			const error = Object.assign(new Error('Meta rejected the Reel'), {
+				response: {
+					status: 422,
+					data: {
+						error: {
+							code: 'publish_rejected',
+							requestId: 'request-123',
+							details: { publishId: 'publish-123', publishRequestId: 'origin-123', providerError },
+						},
+					},
+				},
+			});
+			throw new NodeApiError(context.getNode(), error);
+		},
+		true,
+		{ onError: 'continueErrorOutput' },
+	);
+	const [[item]] = await new Postoo().execute.call(context);
+	assert(item.error instanceof NodeApiError);
+	assert.deepEqual(item.json, {
+		error: 'publish_rejected',
+		message: getPostooErrorMessage('publish_rejected'),
+		requestId: 'request-123',
+		publishId: 'publish-123',
+		publishRequestId: 'origin-123',
+		providerError,
+	});
+	assert.deepEqual(item.error.context.data.providerError, providerError);
 });

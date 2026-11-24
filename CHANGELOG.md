@@ -2,6 +2,12 @@
 
 All notable changes to this package are documented here.
 
+## [0.2.0]
+
+- Publish an MP4 as a Facebook Page Reel or Instagram Reel on compatible Postoo servers.
+- Check processing operations with Get Publish Status.
+- Expose structured Meta rejection details alongside the Postoo request ID.
+
 ## [0.1.2] - 2026-11-08
 
 ### Changed
